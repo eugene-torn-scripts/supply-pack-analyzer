@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    torn.supply.pack.analyzer
-// @version      1.2.2
+// @version      1.2.3
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "1.2.1";
+    const VERSION = "1.2.3";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -850,7 +850,13 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             panel.id = "spa-panel";
             panel.innerHTML = `
                 <div id="spa-header">
-                    <h2>Supply Pack Analyzer <span class="spa-ver">v${VERSION}</span></h2>
+                    <h2>Supply Pack Analyzer <span class="spa-ver">v${VERSION}</span>
+                        <span style="color:#888;font-size:11px;font-weight:400;margin-left:10px">
+                            Like the script? Send a Xanax to
+                            <a href="https://www.torn.com/profiles.php?XID=4192025" target="_blank"
+                               style="color:#cc3333;text-decoration:none">eugene_s [4192025]</a>
+                        </span>
+                    </h2>
                     <button id="spa-close">&times;</button>
                 </div>
                 <div id="spa-tabs">
