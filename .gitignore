@@ -1,0 +1,21 @@
+# Sensitive text files
+*Key.txt
+*Api.txt
+apiKey.txt
+tornApi.txt
+ffscouter*.txt
+logsExample.txt
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Node (in case of future tooling)
+node_modules/
+*.log
