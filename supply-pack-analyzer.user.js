@@ -1,15 +1,32 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
-// @namespace    torn.supply.pack.analyzer
-// @version      1.2.3
+// @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
+// @version      2.0.0
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
 // @grant        none
-// @license      MIT
+// @license      GPL-3.0-or-later
 // @downloadURL  https://update.greasyfork.org/scripts/573251/Supply%20Pack%20Analyzer.user.js
 // @updateURL    https://update.greasyfork.org/scripts/573251/Supply%20Pack%20Analyzer.meta.js
 // ==/UserScript==
+
+/*
+ * Supply Pack Analyzer
+ * Copyright (C) 2026 lannav
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details: https://www.gnu.org/licenses/gpl-3.0.html
+ *
+ * Source: https://github.com/eugene-torn-scripts/supply-pack-analyzer
+ */
 
 (function () {
     "use strict";
@@ -18,7 +35,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "1.2.3";
+    const VERSION = "2.0.0";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;

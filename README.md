@@ -72,4 +72,8 @@ Releases are published on [Greasy Fork](https://greasyfork.org/scripts/573251) b
 
 ## License
 
-MIT — see the license line in the script header.
+GNU General Public License v3.0 or later — see [`LICENSE`](LICENSE).
+
+In short: you're free to use, modify, and redistribute, but any derivative work must also be GPL-3.0 with source published. Attribution to `lannav` must be retained.
+
+(Versions ≤ 1.2.3 were released under MIT and remain MIT for those releases.)
