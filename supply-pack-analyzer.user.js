@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.1.2
+// @version      2.1.3
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -35,7 +35,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.1.2";
+    const VERSION = "2.1.3";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -882,7 +882,8 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             document.body.appendChild(panel);
 
             // Register into the shared eugene-torn-scripts footer menu
-            window.registerEugeneScript({
+            const W = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
+            W.registerEugeneScript({
                 id: "spa",
                 name: "Supply Pack Analyzer",
                 color: "#c49000",
@@ -896,7 +897,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                 </svg>`,
                 onClick: () => this._toggle(true),
             });
-            window.mountEugeneFooterMenu();
+            W.mountEugeneFooterMenu();
 
             // Events
             overlay.addEventListener("click", () => this._toggle(false));
@@ -1439,9 +1440,13 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
     // ════════════════════════════════════════════════════════════
 
     (function setupEugFooterMenu() {
-        if (window.__eugFooterMenuLoaded) return;
-        window.__eugFooterMenuLoaded = true;
-        window.__eugeneScripts = window.__eugeneScripts || [];
+        // Use the page's real window so scripts in different @grant sandboxes
+        // share the same registry. SPA (@grant none) and TAT (@grant GM_*)
+        // otherwise see isolated `window` objects and can't find each other.
+        const W = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
+        if (W.__eugFooterMenuLoaded) return;
+        W.__eugFooterMenuLoaded = true;
+        W.__eugeneScripts = W.__eugeneScripts || [];
 
         const ROW_ID = "eug-footer-row";
 
@@ -1568,7 +1573,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             const oldRow = getRow();
             if (oldRow) oldRow.remove();
 
-            const scripts = window.__eugeneScripts || [];
+            const scripts = W.__eugeneScripts || [];
             if (scripts.length === 0) return true;
 
             if (scripts.length === 1) {
@@ -1592,7 +1597,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             setTimeout(() => obs.disconnect(), 30000);
         }
 
-        window.addEventListener("eugene-scripts-updated", render);
+        W.addEventListener("eugene-scripts-updated", render);
         document.addEventListener("click", (e) => {
             const row = getRow();
             if (!row || !row.classList.contains("eug-open")) return;
@@ -1602,17 +1607,17 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             closeRow();
         });
         document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeRow(); });
-        window.addEventListener("scroll", closeRow, { passive: true });
-        window.addEventListener("resize", closeRow);
+        W.addEventListener("scroll", closeRow, { passive: true });
+        W.addEventListener("resize", closeRow);
 
-        window.registerEugeneScript = function (entry) {
-            const list = window.__eugeneScripts;
+        W.registerEugeneScript = function (entry) {
+            const list = W.__eugeneScripts;
             const i = list.findIndex((s) => s.id === entry.id);
             if (i >= 0) list[i] = entry;
             else list.push(entry);
-            window.dispatchEvent(new CustomEvent("eugene-scripts-updated"));
+            W.dispatchEvent(new CustomEvent("eugene-scripts-updated"));
         };
-        window.mountEugeneFooterMenu = mount;
+        W.mountEugeneFooterMenu = mount;
     })();
 
     // ════════════════════════════════════════════════════════════
