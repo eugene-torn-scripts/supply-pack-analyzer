@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.1.1
+// @version      2.1.2
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -35,7 +35,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.1.1";
+    const VERSION = "2.1.2";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -1548,6 +1548,12 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             return btn;
         }
 
+        // Legacy standalone-button IDs from pre-shared-menu versions.
+        // If a user has a mixed install (one script new, one old), the old
+        // script creates its own button under one of these IDs. Nuke them
+        // so the shared menu stays authoritative. Safe to add new IDs here.
+        const LEGACY_BUTTON_IDS = ["tat-footer-btn", "spa-footer-btn"];
+
         function render() {
             const refBtn = findRefBtn();
             if (!refBtn) return false;
@@ -1555,6 +1561,10 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
 
             const parent = refBtn.parentNode;
             parent.querySelectorAll('[data-eug]').forEach((el) => el.remove());
+            LEGACY_BUTTON_IDS.forEach((id) => {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            });
             const oldRow = getRow();
             if (oldRow) oldRow.remove();
 
