@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.0.0
+// @version      2.1.0
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -35,7 +35,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.0.0";
+    const VERSION = "2.1.0";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -736,10 +736,6 @@
         style.textContent = `
 /* Supply Pack Analyzer */
 
-/* Footer button — amber background, white icon like default buttons */
-#spa-footer-btn{background:linear-gradient(to bottom,#c49000,#8a6500)!important}
-#spa-footer-btn:hover{background:linear-gradient(to bottom,#daa520,#a07800)!important}
-
 /* Overlay & Panel */
 #spa-overlay{display:none;position:fixed;inset:0;z-index:999998;background:rgba(0,0,0,.7)}
 #spa-panel{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:999999;
@@ -885,8 +881,22 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             `;
             document.body.appendChild(panel);
 
-            // Inject button into Torn's footer bar
-            this._injectFooterButton();
+            // Register into the shared eugene-torn-scripts footer menu
+            window.registerEugeneScript({
+                id: "spa",
+                name: "Supply Pack Analyzer",
+                color: "#c49000",
+                colorDark: "#8a6500",
+                hoverColor: "#daa520",
+                iconSVG: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+                    <defs><linearGradient id="spa_icon_grad" x1="0.5" x2="0.5" y2="1" gradientUnits="objectBoundingBox">
+                        <stop offset="0" stop-color="#ddd"/><stop offset="1" stop-color="#999"/>
+                    </linearGradient></defs>
+                    <g fill="url(#spa_icon_grad)"><path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.18l6.5 3.25L12 10.68 5.5 7.43 12 4.18zM4 8.9l7 3.5v7.7l-7-3.5V8.9zm9 11.2v-7.7l7-3.5v7.7l-7 3.5z"/></g>
+                </svg>`,
+                onClick: () => this._toggle(true),
+            });
+            window.mountEugeneFooterMenu();
 
             // Events
             overlay.addEventListener("click", () => this._toggle(false));
@@ -904,38 +914,6 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                 const el = document.getElementById("spa-sync-status");
                 if (el) el.textContent = msg;
             };
-        }
-
-        _injectFooterButton() {
-            const createBtn = () => {
-                if (document.getElementById("spa-footer-btn")) return true;
-                // Find a reference button in the footer to clone its structure/classes
-                const refBtn = document.getElementById("notes_panel_button") || document.getElementById("people_panel_button");
-                if (!refBtn) return false;
-
-                // Clone the reference button's classes for proper layout
-                const btnClasses = refBtn.className;
-                const iconClasses = refBtn.querySelector("svg")?.className?.baseVal || "";
-
-                const btn = document.createElement("button");
-                btn.type = "button";
-                btn.id = "spa-footer-btn";
-                btn.className = btnClasses;
-                btn.title = "Supply Pack Analyzer";
-                btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" class="${iconClasses}">
-                    <defs><linearGradient id="spa_icon_grad" x1="0.5" x2="0.5" y2="1" gradientUnits="objectBoundingBox">
-                        <stop offset="0" stop-color="#ddd"/><stop offset="1" stop-color="#999"/>
-                    </linearGradient></defs>
-                    <g fill="url(#spa_icon_grad)"><path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.18l6.5 3.25L12 10.68 5.5 7.43 12 4.18zM4 8.9l7 3.5v7.7l-7-3.5V8.9zm9 11.2v-7.7l7-3.5v7.7l-7 3.5z"/></g>
-                </svg>`;
-                btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); this._toggle(true); });
-                refBtn.parentNode.insertBefore(btn, refBtn);
-                return true;
-            };
-            if (createBtn()) return;
-            const obs = new MutationObserver(() => { if (createBtn()) obs.disconnect(); });
-            obs.observe(document.body, { childList: true, subtree: true });
-            setTimeout(() => obs.disconnect(), 30000);
         }
 
         _toggle(show) {
@@ -1450,6 +1428,159 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
         }
     }
+
+    // ════════════════════════════════════════════════════════════
+    //  Shared footer menu (eugene-torn-scripts userscripts)
+    //  — 1 script installed: its icon goes in the footer directly.
+    //  — 2+ installed: a single 3-dots menu holds them all and
+    //    expands a row above the footer on click.
+    //  Idempotent and duplicated verbatim across scripts. The
+    //  __eugFooterMenuLoaded guard ensures setup runs once per page.
+    // ════════════════════════════════════════════════════════════
+
+    (function setupEugFooterMenu() {
+        if (window.__eugFooterMenuLoaded) return;
+        window.__eugFooterMenuLoaded = true;
+        window.__eugeneScripts = window.__eugeneScripts || [];
+
+        function injectCSS() {
+            if (document.getElementById("eug-footer-style")) return;
+            const style = document.createElement("style");
+            style.id = "eug-footer-style";
+            style.textContent = `
+[data-eug="menu"]{position:relative;background:linear-gradient(to bottom,#444,#2a2a2a)!important}
+[data-eug="menu"]:hover{background:linear-gradient(to bottom,#555,#333)!important}
+[data-eug-row]{display:none;position:absolute;bottom:calc(100% + 6px);left:0;
+  padding:4px;background:rgba(20,20,20,0.96);border:1px solid #444;border-radius:6px;
+  flex-direction:row;gap:4px;z-index:9999998;white-space:nowrap}
+[data-eug-row].eug-open{display:flex}
+`;
+            document.head.appendChild(style);
+        }
+
+        function injectEntryCSS(entry) {
+            if (!entry.color) return;
+            const id = `eug-color-${entry.id}`;
+            const existing = document.getElementById(id);
+            const dark = entry.colorDark || "#222";
+            const hover = entry.hoverColor || entry.color;
+            const css = `
+[data-eug-id="${entry.id}"]{background:linear-gradient(to bottom, ${entry.color}, ${dark})!important}
+[data-eug-id="${entry.id}"]:hover{background:linear-gradient(to bottom, ${hover}, ${entry.color})!important}
+`;
+            if (existing) { existing.textContent = css; return; }
+            const el = document.createElement("style");
+            el.id = id;
+            el.textContent = css;
+            document.head.appendChild(el);
+        }
+
+        function findRefBtn() {
+            return document.getElementById("notes_panel_button")
+                || document.getElementById("people_panel_button");
+        }
+
+        function makeScriptBtn(entry, refBtn, role) {
+            const iconClasses = refBtn.querySelector("svg")?.className?.baseVal || "";
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = refBtn.className;
+            btn.title = entry.name;
+            btn.setAttribute("data-eug", role);
+            btn.setAttribute("data-eug-id", entry.id);
+            const svg = (entry.iconSVG || "").replace(/<svg\b([^>]*)>/, (match, attrs) =>
+                /\sclass\s*=/.test(attrs) ? match : `<svg${attrs} class="${iconClasses}">`);
+            btn.innerHTML = svg;
+            btn.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const row = btn.closest("[data-eug-row]");
+                if (row) row.classList.remove("eug-open");
+                try { entry.onClick(); } catch { /* noop */ }
+            });
+            injectEntryCSS(entry);
+            return btn;
+        }
+
+        function makeMenuBtn(refBtn) {
+            const iconClasses = refBtn.querySelector("svg")?.className?.baseVal || "";
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = refBtn.className;
+            btn.title = "My userscripts";
+            btn.setAttribute("data-eug", "menu");
+            btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" class="${iconClasses}">
+                <defs><linearGradient id="eug_menu_grad" x1="0.5" x2="0.5" y2="1" gradientUnits="objectBoundingBox">
+                    <stop offset="0" stop-color="#ddd"/><stop offset="1" stop-color="#999"/>
+                </linearGradient></defs>
+                <g fill="url(#eug_menu_grad)">
+                    <circle cx="5" cy="12" r="2"/>
+                    <circle cx="12" cy="12" r="2"/>
+                    <circle cx="19" cy="12" r="2"/>
+                </g>
+            </svg>`;
+            btn.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const row = btn.querySelector("[data-eug-row]");
+                if (row) row.classList.toggle("eug-open");
+            });
+            return btn;
+        }
+
+        function render() {
+            const refBtn = findRefBtn();
+            if (!refBtn) return false;
+            injectCSS();
+
+            const parent = refBtn.parentNode;
+            parent.querySelectorAll('[data-eug]').forEach((el) => {
+                if (el.getAttribute("data-eug") === "item") return;
+                el.remove();
+            });
+
+            const scripts = window.__eugeneScripts || [];
+            if (scripts.length === 0) return true;
+
+            if (scripts.length === 1) {
+                parent.insertBefore(makeScriptBtn(scripts[0], refBtn, "solo"), refBtn);
+            } else {
+                const menuBtn = makeMenuBtn(refBtn);
+                const row = document.createElement("div");
+                row.setAttribute("data-eug-row", "");
+                for (const s of scripts) row.appendChild(makeScriptBtn(s, refBtn, "item"));
+                menuBtn.appendChild(row);
+                parent.insertBefore(menuBtn, refBtn);
+            }
+            return true;
+        }
+
+        function mount() {
+            if (render()) return;
+            const obs = new MutationObserver(() => { if (render()) obs.disconnect(); });
+            obs.observe(document.body, { childList: true, subtree: true });
+            setTimeout(() => obs.disconnect(), 30000);
+        }
+
+        window.addEventListener("eugene-scripts-updated", render);
+        document.addEventListener("click", (e) => {
+            const menuBtn = document.querySelector('[data-eug="menu"]');
+            if (!menuBtn) return;
+            const row = menuBtn.querySelector('[data-eug-row]');
+            if (row && row.classList.contains("eug-open") && !menuBtn.contains(e.target)) {
+                row.classList.remove("eug-open");
+            }
+        });
+
+        window.registerEugeneScript = function (entry) {
+            const list = window.__eugeneScripts;
+            const i = list.findIndex((s) => s.id === entry.id);
+            if (i >= 0) list[i] = entry;
+            else list.push(entry);
+            window.dispatchEvent(new CustomEvent("eugene-scripts-updated"));
+        };
+        window.mountEugeneFooterMenu = mount;
+    })();
 
     // ════════════════════════════════════════════════════════════
     //  MAIN
