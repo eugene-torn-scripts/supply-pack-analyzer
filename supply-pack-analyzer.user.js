@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.1.3
+// @version      2.2.0
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -35,7 +35,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.1.3";
+    const VERSION = "2.2.0";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -316,20 +316,40 @@
         // ── API log parsing ───────────────────────────────────
 
         parseAPIOpening(log) {
-            const packId = log.data?.item;
+            const data = log.data || {};
+            const packId = data.item;
             if (!packId) return null;
-            const items = (log.data?.items || []).map((i) => ({
-                itemId: i.id,
-                name: this.itemIdToName.get(i.id) || `Item #${i.id}`,
-                qty: i.qty || 1,
-            }));
+            // Two shapes seen in the wild:
+            //   a) data.items = [{id, qty}, ...]  — wallets, caches
+            //   b) data.item2, data.item3, ...    — drug pack, duke's safe, etc.
+            //      (optional matching data.qty2, qty3... — fallback qty=1)
+            let items = [];
+            if (Array.isArray(data.items) && data.items.length) {
+                items = data.items.map((i) => ({
+                    itemId: i.id,
+                    name: this.itemIdToName.get(i.id) || `Item #${i.id}`,
+                    qty: i.qty || 1,
+                }));
+            } else {
+                for (const k of Object.keys(data)) {
+                    const m = k.match(/^item(\d+)$/);
+                    if (!m) continue;
+                    const id = data[k];
+                    if (!id) continue;
+                    items.push({
+                        itemId: id,
+                        name: this.itemIdToName.get(id) || `Item #${id}`,
+                        qty: data[`qty${m[1]}`] || 1,
+                    });
+                }
+            }
             return {
                 id: log.id,
                 timestamp: log.timestamp,
                 packItemId: packId,
                 packName: this.itemIdToName.get(packId) || `Pack #${packId}`,
                 items,
-                money: log.data?.money || 0,
+                money: data.money || 0,
                 source: "api",
             };
         }
@@ -360,7 +380,7 @@
     // ════════════════════════════════════════════════════════════
 
     class Analyzer {
-        constructor(db) { this.db = db; this._itemPriceCache = {}; }
+        constructor(db) { this.db = db; this._itemPriceCache = {}; this._priceHistoryCache = {}; }
 
         async _loadPrices() {
             const all = await this.db.getAll("items");
@@ -373,6 +393,34 @@
             return it?.marketPrice || 0;
         }
 
+        async _loadPackPriceHistory() {
+            const history = await this.db.getAll("priceHistory");
+            const byItem = {};
+            for (const h of history) {
+                if (!byItem[h.itemId]) byItem[h.itemId] = [];
+                byItem[h.itemId].push(h);
+            }
+            for (const arr of Object.values(byItem)) arr.sort((a, b) => a.timestamp - b.timestamp);
+            this._priceHistoryCache = byItem;
+        }
+
+        // Market price of an item at a given timestamp — nearest-earlier snapshot, or
+        // earliest snapshot if all are after ts, or current cached price if no history.
+        _priceAt(itemId, ts) {
+            const arr = this._priceHistoryCache[itemId];
+            if (arr && arr.length) {
+                let lo = 0, hi = arr.length - 1, best = -1;
+                while (lo <= hi) {
+                    const mid = (lo + hi) >> 1;
+                    if (arr[mid].timestamp <= ts) { best = mid; lo = mid + 1; }
+                    else hi = mid - 1;
+                }
+                const pick = best >= 0 ? arr[best] : arr[0];
+                if (pick.marketPrice) return pick.marketPrice;
+            }
+            return this._price(itemId);
+        }
+
         _valueOpening(o) {
             let v = o.money || 0;
             for (const it of o.items) v += this._price(it.itemId) * it.qty;
@@ -381,11 +429,13 @@
 
         async getOverview(from, to) {
             await this._loadPrices();
+            await this._loadPackPriceHistory();
             const range = (from || to)
                 ? IDBKeyRange.bound(from || 0, to || 9999999999)
                 : null;
 
             const packs = {};
+            const openingTsByPack = {};
             const addPack = (id, name) => {
                 if (!packs[id]) packs[id] = {
                     packItemId: id, packName: name,
@@ -405,6 +455,7 @@
             for (const o of openings) {
                 const p = addPack(o.packItemId, o.packName);
                 p.opened++;
+                (openingTsByPack[o.packItemId] ||= []).push(o.timestamp);
                 const val = this._valueOpening(o);
                 p.totalValue += val;
                 p.totalMoney += o.money || 0;
@@ -427,12 +478,21 @@
                 pk.totalPurchaseCost += p.costTotal;
             }
 
-            // Cost-per-opened: spent = opened × avg_buy_price
-            // All opened packs valued at avg buy price, even if obtained via trades/gifts
+            // Cost attribution:
+            //   - Purchased ≥1 pack: charge every opening (incl. free ones) at avg buy price.
+            //   - Never purchased: charge each opening at the pack's market price at that
+            //     timestamp — opportunity cost of opening vs. selling the free pack.
             for (const p of Object.values(packs)) {
-                const avgBuyPrice = p.purchased > 0 ? p.totalPurchaseCost / p.purchased : 0;
-                p.avgBuyPrice = avgBuyPrice;
-                p.totalSpent = p.opened * avgBuyPrice;
+                if (p.purchased > 0) {
+                    p.avgBuyPrice = p.totalPurchaseCost / p.purchased;
+                    p.totalSpent = p.opened * p.avgBuyPrice;
+                } else {
+                    let spent = 0;
+                    for (const ts of openingTsByPack[p.packItemId] || [])
+                        spent += this._priceAt(p.packItemId, ts);
+                    p.totalSpent = spent;
+                    p.avgBuyPrice = p.opened > 0 ? spent / p.opened : 0;
+                }
             }
 
             // Totals
@@ -504,6 +564,7 @@
 
         async getEV(packItemId) {
             await this._loadPrices();
+            await this._loadPackPriceHistory();
             const openings = packItemId
                 ? await this.db.getAllByIndex("openings", "packItemId", IDBKeyRange.only(packItemId))
                 : await this.db.getAll("openings");
@@ -519,7 +580,14 @@
                 if (packItemId && p.packItemId !== packItemId) continue;
                 totalCost += p.costTotal; totalQty += p.qty;
             }
-            const avgCost = totalQty > 0 ? totalCost / totalQty : 0;
+            let avgCost;
+            if (totalQty > 0) {
+                avgCost = totalCost / totalQty;
+            } else {
+                let spent = 0;
+                for (const o of openings) spent += this._priceAt(o.packItemId, o.timestamp);
+                avgCost = spent / openings.length;
+            }
 
             return {
                 avgReturn,
@@ -1624,9 +1692,18 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
     //  MAIN
     // ════════════════════════════════════════════════════════════
 
+    // Bump when parseAPIOpening changes shape — forces re-fetch so old
+    // records get overwritten by the new parser. putBatch is keyed by log.id.
+    const PARSER_VERSION = "2";
+
     async function main() {
         const db = new Database();
         await db.open();
+
+        if (localStorage.getItem(LS("parserV")) !== PARSER_VERSION) {
+            localStorage.removeItem(LS("lastOpenSync"));
+            localStorage.setItem(LS("parserV"), PARSER_VERSION);
+        }
 
         const api = new TornAPI();
         const parser = new LogParser();
