@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.2.1
+// @version      2.2.2
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -35,7 +35,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.2.1";
+    const VERSION = "2.2.2";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -1684,10 +1684,21 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
         }
 
         function mount() {
-            if (render()) return;
-            const obs = new MutationObserver(() => { if (render()) obs.disconnect(); });
+            render();
+            // Torn's SPA swaps the footer DOM on navigation, taking our buttons
+            // with it. Keep observing indefinitely and re-render whenever the
+            // ref button is back but our buttons are gone. Throttled via rAF.
+            let pending = false;
+            const obs = new MutationObserver(() => {
+                if (pending) return;
+                pending = true;
+                requestAnimationFrame(() => {
+                    pending = false;
+                    const refBtn = findRefBtn();
+                    if (refBtn && !refBtn.parentNode.querySelector('[data-eug]')) render();
+                });
+            });
             obs.observe(document.body, { childList: true, subtree: true });
-            setTimeout(() => obs.disconnect(), 30000);
         }
 
         W.addEventListener("eugene-scripts-updated", render);
