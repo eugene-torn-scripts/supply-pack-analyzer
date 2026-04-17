@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.2.2
+// @version      2.2.3
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -35,7 +35,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.2.2";
+    const VERSION = "2.2.3";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -319,28 +319,33 @@
             const data = log.data || {};
             const packId = data.item;
             if (!packId) return null;
-            // Two shapes seen in the wild:
-            //   a) data.items = [{id, qty}, ...]  — wallets, caches
-            //   b) data.item2, data.item3, ...    — drug pack, duke's safe, etc.
-            //      (optional matching data.qty2, qty3... — fallback qty=1)
-            let items = [];
-            if (Array.isArray(data.items) && data.items.length) {
-                items = data.items.map((i) => ({
-                    itemId: i.id,
-                    name: this.itemIdToName.get(i.id) || `Item #${i.id}`,
-                    qty: i.qty || 1,
-                }));
-            } else {
-                for (const k of Object.keys(data)) {
-                    const m = k.match(/^item(\d+)$/);
-                    if (!m) continue;
-                    const id = data[k];
-                    if (!id) continue;
-                    items.push({
-                        itemId: id,
-                        name: this.itemIdToName.get(id) || `Item #${id}`,
-                        qty: data[`qty${m[1]}`] || 1,
-                    });
+            // Torn's "Item use X" log types use several shapes (sampled from
+            // real logs in torn-activity-tracker-backend/supply_pack_types):
+            //   a) data.items = [{id, qty}, ...]              — wallet, six-packs, tin of treats
+            //   b) data.item2 = [{id, qty}, ...]              — box of grenades, medical supplies
+            //   c) data.item2 = <id> (scalar) + data.quantity — drug pack
+            //   d) data.item2 = <id> (scalar)                 — duke's safe, keg of beer
+            //   e) only money / donator_days / points         — stash box, donator pack
+            const items = [];
+            const push = (id, qty) => {
+                if (!id) return;
+                items.push({
+                    itemId: id,
+                    name: this.itemIdToName.get(id) || `Item #${id}`,
+                    qty: qty || 1,
+                });
+            };
+            if (Array.isArray(data.items)) {
+                for (const i of data.items) push(i.id, i.qty);
+            }
+            for (const k of Object.keys(data)) {
+                const m = k.match(/^item(\d+)$/);
+                if (!m) continue;
+                const v = data[k];
+                if (Array.isArray(v)) {
+                    for (const i of v) push(i.id, i.qty);
+                } else if (typeof v === "number") {
+                    push(v, data[`qty${m[1]}`] || data.quantity || 1);
                 }
             }
             return {
@@ -1730,7 +1735,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
 
     // Bump when parseAPIOpening changes shape — forces re-fetch so old
     // records get overwritten by the new parser. putBatch is keyed by log.id.
-    const PARSER_VERSION = "2";
+    const PARSER_VERSION = "3";
 
     async function main() {
         const db = new Database();
