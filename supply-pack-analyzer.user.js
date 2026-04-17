@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.2.0
+// @version      2.2.1
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -35,7 +35,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.2.0";
+    const VERSION = "2.2.1";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -1402,13 +1402,38 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                     purchases: await this.db.getAll("purchases"),
                     items: await this.db.getAll("items"),
                 };
-                const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+                const json = JSON.stringify(data);
+                const filename = `spa-export-${new Date().toISOString().slice(0, 10)}.json`;
+                const blob = new Blob([json], { type: "application/json" });
+
+                // Mobile: prefer the native share sheet. iOS Safari / Android Chrome
+                // expose this and handle the file correctly; bypasses the broken
+                // anchor-download path used by WKWebView / in-app browsers.
+                try {
+                    const file = new File([blob], filename, { type: "application/json" });
+                    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                        await navigator.share({ files: [file], title: filename });
+                        return;
+                    }
+                } catch (e) {
+                    if (e.name !== "AbortError") console.warn("SPA share failed, falling back:", e);
+                    else return; // user cancelled
+                }
+
+                // Fallback: anchor download. Append to DOM, delay revoke so the
+                // browser has time to start the fetch before the blob URL dies.
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 a.href = url;
-                a.download = `spa-export-${new Date().toISOString().slice(0, 10)}.json`;
+                a.download = filename;
+                a.rel = "noopener";
+                a.style.display = "none";
+                document.body.appendChild(a);
                 a.click();
-                URL.revokeObjectURL(url);
+                setTimeout(() => {
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                }, 2000);
             });
 
             document.getElementById("spa-import-data").addEventListener("change", async (e) => {
