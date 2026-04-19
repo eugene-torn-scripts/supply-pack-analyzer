@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.2.3
+// @version      2.3.0
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -35,7 +35,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.2.3";
+    const VERSION = "2.3.0";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -53,6 +53,13 @@
     ];
     // Log‑type IDs for purchases (we filter to supply‑pack items client‑side)
     const BUY_LOG_IDS = [1112, 1225];
+
+    // Packs dropped entirely from analysis — their rewards aren't meaningfully
+    // priced as loot, so ROI math would be misleading:
+    //   283 Donator Pack — pays in donator days / points, no sellable items
+    //   798 Duke's Safe  — mission item (drop can't be sold or used)
+    //   815 Keg of Beer  — drop can't be sold on the market
+    const EXCLUDED_PACK_IDS = new Set([283, 798, 815]);
 
     // ════════════════════════════════════════════════════════════
     //  UTILITIES
@@ -319,6 +326,7 @@
             const data = log.data || {};
             const packId = data.item;
             if (!packId) return null;
+            if (EXCLUDED_PACK_IDS.has(packId)) return null;
             // Torn's "Item use X" log types use several shapes (sampled from
             // real logs in torn-activity-tracker-backend/supply_pack_types):
             //   a) data.items = [{id, qty}, ...]              — wallet, six-packs, tin of treats
@@ -364,6 +372,7 @@
             if (!logItems.length) return null;
             const item = logItems[0];
             if (!this.supplyPackIds.has(item.id)) return null;
+            if (EXCLUDED_PACK_IDS.has(item.id)) return null;
             const channel = log.details?.id === 1112 ? "itemmarket" : "bazaar";
             return {
                 id: log.id,
@@ -385,17 +394,54 @@
     // ════════════════════════════════════════════════════════════
 
     class Analyzer {
-        constructor(db) { this.db = db; this._itemPriceCache = {}; this._priceHistoryCache = {}; }
+        constructor(db) {
+            this.db = db;
+            this._itemPriceCache = {};
+            this._priceHistoryCache = {};
+            this._priceOverrides = this._readOverrides();
+        }
+
+        _readOverrides() {
+            try { return JSON.parse(localStorage.getItem(LS("priceOverrides")) || "{}") || {}; }
+            catch { return {}; }
+        }
+
+        _writeOverrides() {
+            localStorage.setItem(LS("priceOverrides"), JSON.stringify(this._priceOverrides));
+        }
+
+        setPriceOverride(itemId, price) {
+            if (!itemId || !(price >= 0)) return;
+            this._priceOverrides[itemId] = price;
+            this._writeOverrides();
+        }
+
+        clearPriceOverride(itemId) {
+            delete this._priceOverrides[itemId];
+            this._writeOverrides();
+        }
+
+        getPriceOverride(itemId) {
+            const v = this._priceOverrides?.[itemId];
+            return v != null ? v : null;
+        }
 
         async _loadPrices() {
             const all = await this.db.getAll("items");
             this._itemPriceCache = {};
             for (const it of all) this._itemPriceCache[it.id] = it;
+            this._priceOverrides = this._readOverrides();
+        }
+
+        _marketPrice(itemId) {
+            const it = this._itemPriceCache[itemId];
+            return it?.marketPrice || 0;
         }
 
         _price(itemId) {
-            const it = this._itemPriceCache[itemId];
-            return it?.marketPrice || 0;
+            const override = this._priceOverrides?.[itemId];
+            if (override != null) return override;
+            return this._marketPrice(itemId);
         }
 
         async _loadPackPriceHistory() {
@@ -458,6 +504,7 @@
                 ? await this.db.getAllByIndex("openings", "timestamp", range)
                 : await this.db.getAll("openings");
             for (const o of openings) {
+                if (EXCLUDED_PACK_IDS.has(o.packItemId)) continue;
                 const p = addPack(o.packItemId, o.packName);
                 p.opened++;
                 (openingTsByPack[o.packItemId] ||= []).push(o.timestamp);
@@ -478,6 +525,7 @@
                 ? await this.db.getAllByIndex("purchases", "timestamp", range)
                 : await this.db.getAll("purchases");
             for (const p of purchases) {
+                if (EXCLUDED_PACK_IDS.has(p.packItemId)) continue;
                 const pk = addPack(p.packItemId, p.packName);
                 pk.purchased += p.qty;
                 pk.totalPurchaseCost += p.costTotal;
@@ -541,15 +589,19 @@
                 }
             }
 
-            const rates = Object.values(items).map((it) => ({
-                ...it,
-                dropRate: total > 0 ? (it.drops / total) * 100 : 0,
-                avgQtyPerDrop: it.drops > 0 ? it.totalQty / it.drops : 0,
-                avgQtyPerOpen: total > 0 ? it.totalQty / total : 0,
-                unitPrice: this._price(it.itemId),
-                valueContribution: total > 0
-                    ? (this._price(it.itemId) * it.totalQty) / total : 0,
-            }));
+            const rates = Object.values(items).map((it) => {
+                const unitPrice = this._price(it.itemId);
+                return {
+                    ...it,
+                    dropRate: total > 0 ? (it.drops / total) * 100 : 0,
+                    avgQtyPerDrop: it.drops > 0 ? it.totalQty / it.drops : 0,
+                    avgQtyPerOpen: total > 0 ? it.totalQty / total : 0,
+                    unitPrice,
+                    marketPrice: this._marketPrice(it.itemId),
+                    hasOverride: this.getPriceOverride(it.itemId) != null,
+                    valueContribution: total > 0 ? (unitPrice * it.totalQty) / total : 0,
+                };
+            });
 
             // Add cash as a virtual drop item
             if (totalMoney > 0) {
@@ -892,6 +944,20 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
 .spa-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .spa-empty{text-align:center;color:#888;padding:30px 0;font-size:14px}
 
+/* Editable price cells in Loot Breakdown */
+.spa-price-cell[data-item-id]{cursor:pointer;position:relative}
+.spa-price-cell[data-item-id]:hover{background:#2f2f2f;outline:1px dashed #555}
+.spa-price-override{color:#ffb74d!important}
+.spa-price-cell input{width:110px;text-align:right;background:#1a1a1a;border:1px solid #4fc3f7;
+  color:#ffb74d;padding:2px 6px;border-radius:3px;font-size:13px;font-variant-numeric:tabular-nums}
+.spa-price-cell input:focus{outline:none;border-color:#29b6f6}
+
+/* Include checkbox on dashboard pack rows — selectors include .spa-table to
+   beat the default .spa-table th/td text-align:left rule on specificity. */
+.spa-table th.spa-include-cell,.spa-table td.spa-include-cell{text-align:center;width:40px;padding-left:4px;padding-right:4px}
+.spa-include-cell input{cursor:pointer;accent-color:#4fc3f7;margin:0;vertical-align:middle}
+.spa-row-excluded td{opacity:.45}
+
 /* Mobile */
 @media(max-width:768px){
   #spa-panel{width:100vw!important;max-width:100vw;min-width:0;border-radius:0;top:0;left:0;
@@ -1006,13 +1072,22 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
 
         async _renderActiveTab() {
             const c = this._content();
-            c.innerHTML = '<div class="spa-empty">Loading...</div>';
+            // Only show the "Loading..." placeholder for the very first render
+            // (when the panel hasn't drawn anything yet). Subsequent re-renders
+            // keep the existing content visible until the new HTML is ready —
+            // otherwise every sort click / checkbox toggle / price edit flashes
+            // blank, which reads as flicker. Also preserve the scroll position
+            // so the view doesn't jump after an in-place update.
+            const isFirstRender = !c.innerHTML.trim();
+            if (isFirstRender) c.innerHTML = '<div class="spa-empty">Loading...</div>';
+            const scrollTop = c.scrollTop;
             try {
                 switch (this.activeTab) {
                     case "dashboard": await this._renderDashboard(c); break;
                     case "packDetail": await this._renderPackDetail(c); break;
                     case "settings": await this._renderSettings(c); break;
                 }
+                c.scrollTop = scrollTop;
             } catch (e) {
                 c.innerHTML = `<div class="spa-empty">Error: ${e.message}</div>`;
                 console.error("SPA render error:", e);
@@ -1071,10 +1146,79 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
 
         // ── Dashboard ───────────────────────────────────────
 
+        _loadExcludedPacks() {
+            try { return new Set(JSON.parse(localStorage.getItem(LS("excludedPacks")) || "[]").map(Number)); }
+            catch { return new Set(); }
+        }
+
+        _saveExcludedPacks(set) {
+            localStorage.setItem(LS("excludedPacks"), JSON.stringify([...set]));
+        }
+
+        /**
+         * Recompute the 4 dashboard summary cards from the last cached overview
+         * (this._lastOverview) using the current excluded-packs set. Used by the
+         * include checkbox so a toggle doesn't trigger a full re-render.
+         */
+        _updateSummaryCards() {
+            const ov = this._lastOverview;
+            if (!ov) return;
+            const excluded = this._loadExcludedPacks();
+            let incSpent = 0, incValue = 0, incOpened = 0;
+            for (const p of Object.values(ov.packs)) {
+                if (excluded.has(p.packItemId)) continue;
+                incSpent += p.totalSpent;
+                incValue += p.totalValue;
+                incOpened += p.opened;
+            }
+            const incPnl = incValue - incSpent;
+            const incRoi = incSpent > 0 ? (incPnl / incSpent) * 100 : 0;
+            const incVpk = incOpened > 0 ? incValue / incOpened : 0;
+            const excludedCount = [...excluded].filter((id) => ov.packs[id]).length;
+
+            const setCard = (key, valueText, valueClass, subText) => {
+                const card = document.querySelector(`#spa-content [data-card="${key}"]`);
+                if (!card) return;
+                const valEl = card.querySelector('[data-field="value"]');
+                const subEl = card.querySelector('[data-field="sub"]');
+                if (valEl) {
+                    valEl.textContent = valueText;
+                    if (valueClass) valEl.className = "value " + valueClass;
+                }
+                if (subEl) subEl.textContent = subText;
+            };
+            setCard("spent", fmt.money(incSpent), "spa-yellow",
+                `Cost of ${fmt.num(incOpened)} opened` + (excludedCount ? ` (${excludedCount} pack${excludedCount === 1 ? "" : "s"} excluded)` : ""));
+            setCard("value", fmt.money(incValue), "spa-blue",
+                `${fmt.num(incOpened)} packs opened`);
+            setCard("pnl", fmt.money(incPnl), incPnl >= 0 ? "spa-green" : "spa-red",
+                fmt.moneyFull(incPnl));
+            setCard("roi", fmt.pct(incRoi), incRoi >= 0 ? "spa-green" : "spa-red",
+                `Avg ${fmt.money(incVpk)} per pack`);
+        }
+
         async _renderDashboard(c) {
             const ov = await this.analyzer.getOverview(this.dateFrom, this.dateTo);
-            const pnlClass = ov.pnl >= 0 ? "spa-green" : "spa-red";
-            const roiClass = ov.roi >= 0 ? "spa-green" : "spa-red";
+            // Stash so the include-toggle can recompute summary cards without
+            // a full re-render / IDB refetch.
+            this._lastOverview = ov;
+            const excluded = this._loadExcludedPacks();
+
+            // Totals that feed the summary cards — exclude user-unchecked packs.
+            let incSpent = 0, incValue = 0, incOpened = 0;
+            for (const p of Object.values(ov.packs)) {
+                if (excluded.has(p.packItemId)) continue;
+                incSpent += p.totalSpent;
+                incValue += p.totalValue;
+                incOpened += p.opened;
+            }
+            const incPnl = incValue - incSpent;
+            const incRoi = incSpent > 0 ? (incPnl / incSpent) * 100 : 0;
+            const incVpk = incOpened > 0 ? incValue / incOpened : 0;
+            const excludedCount = [...excluded].filter((id) => ov.packs[id]).length;
+
+            const pnlClass = incPnl >= 0 ? "spa-green" : "spa-red";
+            const roiClass = incRoi >= 0 ? "spa-green" : "spa-red";
 
             let packRows = Object.values(ov.packs);
             if (this._sortCol) {
@@ -1092,24 +1236,26 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             c.innerHTML = `
                 ${this._dateFilterHTML()}
                 <div class="spa-cards">
-                    <div class="spa-card"><div class="label">Total Spent</div>
-                        <div class="value spa-yellow">${fmt.money(ov.totalSpent)}</div>
-                        <div class="sub">Cost of ${fmt.num(ov.totalOpened)} opened</div></div>
-                    <div class="spa-card"><div class="label">Total Value Gained</div>
-                        <div class="value spa-blue">${fmt.money(ov.totalValue)}</div>
-                        <div class="sub">${fmt.num(ov.totalOpened)} packs opened</div></div>
-                    <div class="spa-card"><div class="label">Profit / Loss</div>
-                        <div class="value ${pnlClass}">${fmt.money(ov.pnl)}</div>
-                        <div class="sub">${fmt.moneyFull(ov.pnl)}</div></div>
-                    <div class="spa-card"><div class="label">ROI</div>
-                        <div class="value ${roiClass}">${fmt.pct(ov.roi)}</div>
-                        <div class="sub">Avg ${fmt.money(ov.valuePerPack)} per pack</div></div>
+                    <div class="spa-card" data-card="spent"><div class="label">Total Spent</div>
+                        <div class="value spa-yellow" data-field="value">${fmt.money(incSpent)}</div>
+                        <div class="sub" data-field="sub">Cost of ${fmt.num(incOpened)} opened${excludedCount ? ` (${excludedCount} pack${excludedCount === 1 ? "" : "s"} excluded)` : ""}</div></div>
+                    <div class="spa-card" data-card="value"><div class="label">Total Value Gained</div>
+                        <div class="value spa-blue" data-field="value">${fmt.money(incValue)}</div>
+                        <div class="sub" data-field="sub">${fmt.num(incOpened)} packs opened</div></div>
+                    <div class="spa-card" data-card="pnl"><div class="label">Profit / Loss</div>
+                        <div class="value ${pnlClass}" data-field="value">${fmt.money(incPnl)}</div>
+                        <div class="sub" data-field="sub">${fmt.moneyFull(incPnl)}</div></div>
+                    <div class="spa-card" data-card="roi"><div class="label">ROI</div>
+                        <div class="value ${roiClass}" data-field="value">${fmt.pct(incRoi)}</div>
+                        <div class="sub" data-field="sub">Avg ${fmt.money(incVpk)} per pack</div></div>
                 </div>
                 ${packRows.length ? `
                 <div class="spa-section">
                     <h3>Pack Performance</h3>
+                    <p class="spa-hint">Untick a pack to exclude it from the summary cards above.</p>
                     <div class="spa-table-wrap"><table class="spa-table" id="spa-pack-table">
                         <thead><tr>
+                            <th class="spa-include-cell" title="Include in totals">✓</th>
                             <th data-sort="packName" class="${this._sortCls(this._sortCol, this._sortDir, "packName")}">Pack</th>
                             <th data-sort="opened" class="num ${this._sortCls(this._sortCol, this._sortDir, "opened")}">Opened</th>
                             <th data-sort="totalSpent" class="num ${this._sortCls(this._sortCol, this._sortDir, "totalSpent")}">Cost</th>
@@ -1123,7 +1269,9 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                             const pnl = p.totalValue - p.totalSpent;
                             const roi = p.totalSpent > 0 ? (pnl / p.totalSpent) * 100 : 0;
                             const vpk = p.opened > 0 ? p.totalValue / p.opened : 0;
-                            return `<tr data-pack="${p.packItemId}" style="cursor:pointer">
+                            const isIncluded = !excluded.has(p.packItemId);
+                            return `<tr data-pack="${p.packItemId}" style="cursor:pointer" class="${isIncluded ? "" : "spa-row-excluded"}">
+                                <td class="spa-include-cell"><input type="checkbox" class="spa-include-cb" data-pack-id="${p.packItemId}" ${isIncluded ? "checked" : ""}></td>
                                 <td>${this._escHtml(p.packName)}</td>
                                 <td class="num">${fmt.num(p.opened)}</td>
                                 <td class="num">${fmt.money(p.totalSpent)}</td>
@@ -1139,7 +1287,10 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             `;
 
             this._bindDateFilter();
-            this._addColToggle("spa-pack-table", "dash", [2, 3, 6]);
+            // Col indices shifted by +1 now that there's an Include checkbox column at index 0.
+            // startIdx=2 keeps both the Include checkbox and Pack-name columns fixed.
+            // Storage key "dash2" is a fresh slot — the old "dash" state used pre-shift indices.
+            this._addColToggle("spa-pack-table", "dash2", [3, 4, 7], 2);
 
             // Sort
             c.querySelectorAll("#spa-pack-table th[data-sort]").forEach((th) => {
@@ -1151,9 +1302,27 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                 });
             });
 
-            // Click row → pack detail
+            // Include / exclude checkbox — update only what actually changes
+            // (row dim + summary cards) so the UI doesn't flash through a full
+            // re-render + IDB refetch on every toggle.
+            c.querySelectorAll("#spa-pack-table .spa-include-cb").forEach((cb) => {
+                cb.addEventListener("click", (e) => e.stopPropagation());
+                cb.addEventListener("change", () => {
+                    const id = +cb.dataset.packId;
+                    const set = this._loadExcludedPacks();
+                    if (cb.checked) set.delete(id);
+                    else set.add(id);
+                    this._saveExcludedPacks(set);
+                    const row = cb.closest("tr");
+                    if (row) row.classList.toggle("spa-row-excluded", !cb.checked);
+                    this._updateSummaryCards();
+                });
+            });
+
+            // Click row → pack detail (ignore clicks that land on the checkbox cell)
             c.querySelectorAll("#spa-pack-table tr[data-pack]").forEach((tr) => {
-                tr.addEventListener("click", () => {
+                tr.addEventListener("click", (e) => {
+                    if (e.target.closest(".spa-include-cell")) return;
                     this.selectedPack = tr.dataset.pack === "null" ? null : +tr.dataset.pack;
                     this.activeTab = "packDetail";
                     this._updateTabs();
@@ -1237,6 +1406,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                 <div class="spa-section">
                     <h3>Loot Breakdown</h3>
                     ${dr.rates.length ? `
+                    <p class="spa-hint">Click a unit price and type a new value + Enter to override it (useful when an item's market price is unreliable, e.g. special cache drops). To revert to the market price, click the price, clear the field, and press Enter. Overrides are highlighted <span class="spa-price-override">in orange</span>.</p>
                     <div class="spa-table-wrap"><table class="spa-table" id="spa-loot-table">
                         <thead><tr>
                             <th data-sort="name">Item</th>
@@ -1247,15 +1417,20 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                             <th data-sort="unitPrice" class="num">Unit Price</th>
                             <th data-sort="valueContribution" class="num">Value/Pack</th>
                         </tr></thead>
-                        <tbody>${dr.rates.map((r) => `
-                            <tr><td>${this._escHtml(r.name)}</td>
+                        <tbody>${dr.rates.map((r) => {
+                            const editable = !!r.itemId;
+                            const priceCls = "num spa-price-cell" + (r.hasOverride ? " spa-price-override" : "");
+                            const priceAttrs = editable
+                                ? `data-item-id="${r.itemId}" data-market="${r.marketPrice || 0}" title="${r.hasOverride ? `Overridden. Market ${fmt.money(r.marketPrice)}. Click to change.` : "Click to override"}"`
+                                : "";
+                            return `<tr><td>${this._escHtml(r.name)}</td>
                                 <td class="num">${fmt.num(r.totalQty)}</td>
                                 <td class="num">${fmt.num(r.drops)}</td>
                                 <td class="num">${r.dropRate.toFixed(1)}%</td>
                                 <td class="num">${r.avgQtyPerDrop.toFixed(2)}</td>
-                                <td class="num">${fmt.money(r.unitPrice)}</td>
-                                <td class="num">${fmt.money(r.valueContribution)}</td></tr>
-                        `).join("")}</tbody>
+                                <td class="${priceCls}" ${priceAttrs}>${fmt.money(r.unitPrice)}</td>
+                                <td class="num">${fmt.money(r.valueContribution)}</td></tr>`;
+                        }).join("")}</tbody>
                     </table></div>` : '<div class="spa-empty">No drops recorded</div>'}
                 </div>
             `;
@@ -1266,6 +1441,8 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                 this.selectedPack = +e.target.value;
                 this._renderActiveTab();
             });
+
+            this._bindPriceOverrideEditing(c);
 
             // Loot table sorting
             c.querySelectorAll("#spa-loot-table th[data-sort]").forEach((th) => {
@@ -1460,6 +1637,53 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
 
         // ── Helpers ─────────────────────────────────────────
 
+        /**
+         * Make unit-price cells in the Loot Breakdown click-to-edit. Commit on
+         * Enter/blur, cancel on Escape. Empty input clears the override.
+         */
+        _bindPriceOverrideEditing(c) {
+            const cells = c.querySelectorAll(".spa-price-cell[data-item-id]");
+            cells.forEach((td) => {
+                td.addEventListener("click", () => {
+                    if (td.querySelector("input")) return; // already editing
+                    const itemId = +td.dataset.itemId;
+                    if (!itemId) return;
+                    const current = this.analyzer.getPriceOverride(itemId);
+                    const market = +td.dataset.market || 0;
+                    const seed = current != null ? current : market || "";
+                    const original = td.innerHTML;
+                    td.innerHTML = `<input type="number" step="any" min="0" value="${seed}" placeholder="${market}">`;
+                    const inp = td.querySelector("input");
+                    inp.focus();
+                    inp.select();
+
+                    let done = false;
+                    const commit = () => {
+                        if (done) return;
+                        done = true;
+                        const v = inp.value.trim();
+                        if (v === "") {
+                            this.analyzer.clearPriceOverride(itemId);
+                        } else {
+                            const n = Number(v);
+                            if (!isNaN(n) && n >= 0) this.analyzer.setPriceOverride(itemId, n);
+                        }
+                        this._renderActiveTab();
+                    };
+                    const cancel = () => {
+                        done = true;
+                        td.innerHTML = original;
+                    };
+                    inp.addEventListener("keydown", (e) => {
+                        if (e.key === "Enter") { e.preventDefault(); commit(); }
+                        else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+                    });
+                    inp.addEventListener("blur", commit);
+                    inp.addEventListener("click", (e) => e.stopPropagation());
+                });
+            });
+        }
+
         _sortCls(stateCol, stateDir, col) {
             if (stateCol !== col) return "";
             return stateDir > 0 ? "sort-asc" : "sort-desc";
@@ -1467,9 +1691,11 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
 
         /**
          * Add column toggle buttons above a table.
-         * storageKey persists choices. mobileHidden = array of column indices (1-based) to hide by default on mobile.
+         * storageKey persists choices. mobileHidden = array of column indices to hide by default on mobile.
+         * startIdx = index of the first toggleable column; anything before stays fixed (used to
+         * protect leading fixed cols like row label + include-checkbox).
          */
-        _addColToggle(tableId, storageKey, mobileHidden = []) {
+        _addColToggle(tableId, storageKey, mobileHidden = [], startIdx = 1) {
             const table = document.getElementById(tableId);
             if (!table) return;
             const headers = [...table.querySelectorAll("thead th")];
@@ -1481,7 +1707,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             // Build full state: if saved exists use it, otherwise build defaults
             const state = {};
             headers.forEach((_, i) => {
-                if (i === 0) return;
+                if (i < startIdx) return;
                 if (saved && saved[i] !== undefined) {
                     state[i] = saved[i];
                 } else {
@@ -1499,7 +1725,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             };
 
             headers.forEach((th, i) => {
-                if (i === 0) return;
+                if (i < startIdx) return;
                 const name = th.textContent.trim().replace(/[⇅▲▼]/g, "").trim();
                 const visible = state[i];
                 const label = document.createElement("label");
