@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.4.3
+// @version      2.4.4
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -38,7 +38,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.4.3";
+    const VERSION = "2.4.4";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -1227,7 +1227,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                 }
                 host.innerHTML = `
                     <div class="spa-donor-banner">
-                        💚 <b>Thank you for your Xanax donation</b> — I really appreciate your support! It keeps the script alive.
+                        💚 <b>Thank you for your Xanax donation</b> — I really appreciate your support!
                         <button class="spa-donor-dismiss" title="Dismiss">&times;</button>
                     </div>
                 `;
