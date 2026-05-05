@@ -125,12 +125,32 @@ re-upload.
 </p>
 <p>&nbsp;</p>
 <p>
+  <span style="font-size: 16px;"><strong>💚 If you like the script</strong></span>
+</p>
+<p>&nbsp;</p>
+<p>
+  Building and maintaining this is a labour of love &mdash; and a Xanax now and then keeps it going. If SPA has saved
+  you money on packs and you want to say thanks, send a Xanax to
+  <a href="https://www.torn.com/profiles.php?XID=4192025" target="_blank" rel="noopener">eugene_s [4192025]</a>
+  with <strong>"supply"</strong>, <strong>"pack"</strong>, or <strong>"analyzer"</strong> in the message. Donors will
+  see a small green thank-you note on the Dashboard tab. Dismissable, no nags.
+</p>
+<p>&nbsp;</p>
+<hr />
+<p>&nbsp;</p>
+<p>
   <span style="font-size: 16px;"><strong>🔒 Privacy</strong></span>
 </p>
 <p>&nbsp;</p>
 <p>
   Your API key <strong>never leaves your browser</strong>. It's stored locally and only sent directly to Torn's official
-  API. No third-party servers. No data collection. Everything runs in your browser.
+  API. No data collection. Everything runs in your browser.
+</p>
+<p>&nbsp;</p>
+<p>
+  The one exception is the donor-status check above &mdash; it sends just your Torn user id (no key, no PII) to a small
+  Cloudflare Worker so the thank-you banner can light up. Cached for 6 hours, so a single tab hits the worker at most
+  ~4 times a day.
 </p>
 <p>&nbsp;</p>
 <hr />

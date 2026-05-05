@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.3.0
+// @version      2.4.0
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -35,10 +35,17 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.3.0";
+    const VERSION = "2.4.0";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
+
+    // Cloudflare Worker that powers the donor "thank-you" banner. Read-only,
+    // takes only the requester's Torn user id (no API key, no PII), returns
+    // { donor, lastDonationTs }. Cached for 6h in localStorage and shared
+    // across all torn.com tabs (same origin → same localStorage), so a
+    // typical user hits this at most ~4 times/day.
+    const DONOR_API_BASE = "https://eugene-torn-donors.sytnik-evhen.workers.dev";
 
     const API_BASE = "https://api.torn.com/v2";
     const API_DELAY = 750;
@@ -895,6 +902,10 @@
 .spa-card .value{font-size:22px;font-weight:700;margin-top:4px}
 .spa-card .sub{color:#888;font-size:12px;margin-top:2px}
 .spa-green{color:#4caf50!important}.spa-red{color:#ef5350!important}.spa-blue{color:#4fc3f7!important}.spa-yellow{color:#ffb74d!important}
+.spa-donor-banner{background:linear-gradient(180deg,#1c2a1c,#162216);border:1px solid #2e4a2e;border-left:3px solid #4caf50;border-radius:4px;padding:8px 36px 8px 12px;margin:0 0 12px;color:#a5d6a7;font-size:13px;line-height:1.4;position:relative}
+.spa-donor-banner b{color:#c5e1a5}
+.spa-donor-dismiss{position:absolute;top:4px;right:6px;background:none;border:none;color:#6e836e;font-size:18px;cursor:pointer;padding:0 4px;line-height:1}
+.spa-donor-dismiss:hover{color:#fff}
 
 /* Tables */
 table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
@@ -969,6 +980,97 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
 `;
         document.head.appendChild(style);
     }
+
+    // ════════════════════════════════════════════════════════════
+    //  DONOR CLIENT — talks to the eugene-torn-donors CF worker so the
+    //  Dashboard tab can show a green "thanks for the Xanax" banner to
+    //  anyone who has tipped this script. Best-effort and silent on
+    //  failure; the banner is a niceness, not a feature path. Cache
+    //  lives in localStorage (shared across all torn.com tabs).
+    // ════════════════════════════════════════════════════════════
+
+    const DonorClient = {
+        CACHE_TTL_MS: 6 * 60 * 60 * 1000,
+        _inflight: null,    // dedupes concurrent fetches across re-renders
+
+        _readCache() {
+            try {
+                const raw = localStorage.getItem(LS("donorCache"));
+                return raw ? JSON.parse(raw) : null;
+            } catch { return null; }
+        },
+        _writeCache(obj) {
+            try { localStorage.setItem(LS("donorCache"), JSON.stringify(obj)); } catch { /* quota */ }
+        },
+        _readAck() {
+            const v = parseInt(localStorage.getItem(LS("donorAck")) || "0", 10);
+            return Number.isFinite(v) ? v : 0;
+        },
+        _writeAck(ts) {
+            try { localStorage.setItem(LS("donorAck"), String(ts)); } catch { /* quota */ }
+        },
+
+        // Reads the player id that was stashed when the API key was last
+        // validated. For users who saved their key on an older version
+        // (before player_id was persisted) we lazily back-fill on first
+        // call here using the saved key.
+        async getUserId() {
+            const stored = localStorage.getItem(LS("userId"));
+            if (stored && /^\d+$/.test(stored)) return parseInt(stored, 10);
+            const key = localStorage.getItem(LS("apiKey"));
+            if (!key) return null;
+            try {
+                const r = await fetch(`${API_BASE}/user/?selections=basic&key=${encodeURIComponent(key)}`);
+                if (!r.ok) return null;
+                const d = await r.json();
+                if (d && d.player_id) {
+                    localStorage.setItem(LS("userId"), String(d.player_id));
+                    return d.player_id;
+                }
+            } catch { /* network */ }
+            return null;
+        },
+
+        cachedStatus(userId) {
+            const c = this._readCache();
+            if (!c || c.userId !== userId) return null;
+            if ((Date.now() - (c.fetchedAt || 0)) > this.CACHE_TTL_MS) return null;
+            return c;
+        },
+
+        async fetchStatus(userId) {
+            if (!userId) return null;
+            if (this._inflight) return this._inflight;
+            const url = `${DONOR_API_BASE}/donor?id=${encodeURIComponent(userId)}&script=spa`;
+            this._inflight = (async () => {
+                try {
+                    const r = await fetch(url, { method: "GET", credentials: "omit", cache: "default" });
+                    if (!r.ok) return null;
+                    const d = await r.json();
+                    const status = {
+                        userId,
+                        donor: !!d.donor,
+                        lastDonationTs: Number(d.lastDonationTs) || 0,
+                        fetchedAt: Date.now(),
+                    };
+                    this._writeCache(status);
+                    return status;
+                } catch { return null; }
+            })();
+            try { return await this._inflight; }
+            finally { this._inflight = null; }
+        },
+
+        shouldShow(status) {
+            if (!status || !status.donor) return false;
+            if (!status.lastDonationTs) return false;
+            return status.lastDonationTs > this._readAck();
+        },
+
+        dismiss(lastDonationTs) {
+            this._writeAck(lastDonationTs || 0);
+        },
+    };
 
     // ════════════════════════════════════════════════════════════
     //  UI
@@ -1069,6 +1171,40 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
         }
 
         _content() { return document.getElementById("spa-content"); }
+
+        _renderDonorBanner(host) {
+            // Belt-and-braces — host is created in _renderDashboard(); a missing
+            // node just means we're being called outside the Dashboard tab.
+            if (!host) return;
+
+            const paint = (status) => {
+                if (!host.isConnected) return; // tab swapped before fetch resolved
+                if (!DonorClient.shouldShow(status)) {
+                    host.innerHTML = "";
+                    return;
+                }
+                host.innerHTML = `
+                    <div class="spa-donor-banner">
+                        💚 <b>Thank you for your Xanax donation</b> — I really appreciate your support! It keeps the script alive.
+                        <button class="spa-donor-dismiss" title="Dismiss">&times;</button>
+                    </div>
+                `;
+                host.querySelector(".spa-donor-dismiss").addEventListener("click", () => {
+                    DonorClient.dismiss(status.lastDonationTs);
+                    host.innerHTML = "";
+                });
+            };
+
+            // Resolve user id (instant if already in localStorage, lazy
+            // back-fill via /user/?selections=basic for users who saved
+            // their key on a pre-2.4.0 build).
+            DonorClient.getUserId().then((userId) => {
+                if (!userId || !host.isConnected) return;
+                const cached = DonorClient.cachedStatus(userId);
+                if (cached) { paint(cached); return; }
+                DonorClient.fetchStatus(userId).then(paint);
+            });
+        }
 
         async _renderActiveTab() {
             const c = this._content();
@@ -1234,6 +1370,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             }
 
             c.innerHTML = `
+                <div id="spa-donor-host"></div>
                 ${this._dateFilterHTML()}
                 <div class="spa-cards">
                     <div class="spa-card" data-card="spent"><div class="label">Total Spent</div>
@@ -1287,6 +1424,7 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             `;
 
             this._bindDateFilter();
+            this._renderDonorBanner(c.querySelector("#spa-donor-host"));
             // Col indices shifted by +1 now that there's an Include checkbox column at index 0.
             // startIdx=2 keeps both the Include checkbox and Pack-name columns fixed.
             // Storage key "dash2" is a fresh slot — the old "dash" state used pre-shift indices.
@@ -1539,6 +1677,11 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                     if (data.error) { status.innerHTML = `<span class="spa-red">Invalid: ${data.error.error}</span>`; return; }
                     localStorage.setItem(LS("apiKey"), key);
                     this.api.apiKey = key;
+                    // Persist the user id so the donor-banner client can
+                    // look up donor status without re-validating the key.
+                    if (data.player_id) {
+                        localStorage.setItem(LS("userId"), String(data.player_id));
+                    }
                     status.innerHTML = `<span class="spa-green">Valid! Player: ${data.player_id || data.name || "OK"}</span>`;
                     document.getElementById("spa-sync-btn").disabled = false;
                 } catch (e) {

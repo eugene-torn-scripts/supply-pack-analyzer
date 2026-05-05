@@ -43,8 +43,15 @@ Injected as a floating panel on `torn.com`. Three tabs:
 
 - Your Torn API key is stored in `localStorage` under `spa_apiKey` and used only for direct requests to `api.torn.com`.
 - Pack history, purchases, and item prices are stored in your browser's IndexedDB.
-- Nothing is uploaded anywhere. There is no server. If you want to move data between browsers, use the **Export JSON** button in Settings.
+- The donor "thank-you" banner (see *Supporters* below) calls a small Cloudflare Worker (`eugene-torn-donors`) with **only your Torn user id** — no API key, no PII. The worker never sees your key. Response cached in `localStorage` for 6 hours.
+- If you want to move pack data between browsers, use the **Export JSON** button in Settings.
 - Uninstalling the script doesn't wipe the data — use **Reset DB** in Settings first if you want a clean removal.
+
+---
+
+## Supporters
+
+The script is free and will stay free. If it's helped you stop bleeding cash on supply packs and you want to say thanks, send a Xanax to **eugene_s [4192025]** with `supply`, `pack`, or `analyzer` in the message — anyone who does will see a small green thank-you banner on the Dashboard. It's dismissable, and reappears only after a new qualifying donation. Detection runs server-side via a daily cron over my own Torn log, not by parsing yours.
 
 ---
 
