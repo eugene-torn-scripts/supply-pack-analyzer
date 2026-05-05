@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.4.0
+// @version      2.4.1
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      api.torn.com
+// @connect      *.workers.dev
 // @license      GPL-3.0-or-later
 // @downloadURL  https://update.greasyfork.org/scripts/573251/Supply%20Pack%20Analyzer.user.js
 // @updateURL    https://update.greasyfork.org/scripts/573251/Supply%20Pack%20Analyzer.meta.js
@@ -35,7 +38,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.4.0";
+    const VERSION = "2.4.1";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -46,6 +49,14 @@
     // across all torn.com tabs (same origin → same localStorage), so a
     // typical user hits this at most ~4 times/day.
     const DONOR_API_BASE = "https://eugene-torn-donors.sytnik-evhen.workers.dev";
+
+    // Torn's page CSP blocks fetch() to any non-allowlisted origin.
+    // GM_xmlhttpRequest bypasses page CSP via Tampermonkey's own network stack.
+    // On PDA the GM polyfill silently drops response bodies on 200s, so we
+    // fall back to native fetch there (the worker has CORS:* for that path).
+    // eslint-disable-next-line no-undef
+    const GM_XHR = (typeof GM_xmlhttpRequest !== "undefined") ? GM_xmlhttpRequest : null;
+    const IS_PDA = typeof PDA_httpGet === "function";
 
     const API_BASE = "https://api.torn.com/v2";
     const API_DELAY = 750;
@@ -1038,24 +1049,51 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             return c;
         },
 
+        // GM_xmlhttpRequest bypasses Torn's page CSP. Fall back to native
+        // fetch on PDA (where GM polyfill drops bodies) or if GM is missing.
+        _request(url) {
+            return new Promise((resolve) => {
+                const useFetch = IS_PDA || typeof GM_XHR !== "function";
+                if (useFetch) {
+                    fetch(url, { method: "GET", credentials: "omit", cache: "default" })
+                        .then((r) => r.ok ? r.json() : null)
+                        .then(resolve)
+                        .catch(() => resolve(null));
+                    return;
+                }
+                try {
+                    GM_XHR({
+                        method: "GET",
+                        url,
+                        anonymous: true,
+                        timeout: 10_000,
+                        onload: (res) => {
+                            if (!res || res.status < 200 || res.status >= 300) return resolve(null);
+                            try { resolve(JSON.parse(res.responseText)); }
+                            catch { resolve(null); }
+                        },
+                        onerror: () => resolve(null),
+                        ontimeout: () => resolve(null),
+                    });
+                } catch { resolve(null); }
+            });
+        },
+
         async fetchStatus(userId) {
             if (!userId) return null;
             if (this._inflight) return this._inflight;
             const url = `${DONOR_API_BASE}/donor?id=${encodeURIComponent(userId)}&script=spa`;
             this._inflight = (async () => {
-                try {
-                    const r = await fetch(url, { method: "GET", credentials: "omit", cache: "default" });
-                    if (!r.ok) return null;
-                    const d = await r.json();
-                    const status = {
-                        userId,
-                        donor: !!d.donor,
-                        lastDonationTs: Number(d.lastDonationTs) || 0,
-                        fetchedAt: Date.now(),
-                    };
-                    this._writeCache(status);
-                    return status;
-                } catch { return null; }
+                const d = await this._request(url);
+                if (!d) return null;
+                const status = {
+                    userId,
+                    donor: !!d.donor,
+                    lastDonationTs: Number(d.lastDonationTs) || 0,
+                    fetchedAt: Date.now(),
+                };
+                this._writeCache(status);
+                return status;
             })();
             try { return await this._inflight; }
             finally { this._inflight = null; }
