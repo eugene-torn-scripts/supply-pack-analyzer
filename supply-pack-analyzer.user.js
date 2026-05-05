@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.4.1
+// @version      2.4.2
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -38,7 +38,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.4.1";
+    const VERSION = "2.4.2";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -1034,9 +1034,11 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                 const r = await fetch(`${API_BASE}/user/?selections=basic&key=${encodeURIComponent(key)}`);
                 if (!r.ok) return null;
                 const d = await r.json();
-                if (d && d.player_id) {
-                    localStorage.setItem(LS("userId"), String(d.player_id));
-                    return d.player_id;
+                // v2 wraps under `profile`; keep v1 fallback in case the API flips.
+                const id = (d && d.profile && d.profile.id) || (d && d.player_id);
+                if (id) {
+                    localStorage.setItem(LS("userId"), String(id));
+                    return id;
                 }
             } catch { /* network */ }
             return null;
@@ -1717,10 +1719,14 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                     this.api.apiKey = key;
                     // Persist the user id so the donor-banner client can
                     // look up donor status without re-validating the key.
-                    if (data.player_id) {
-                        localStorage.setItem(LS("userId"), String(data.player_id));
+                    // v2 wraps the basic profile under `profile`; v1 used a
+                    // flat `player_id`. Honour both to be safe.
+                    const playerId = (data.profile && data.profile.id) || data.player_id;
+                    const playerName = (data.profile && data.profile.name) || data.name;
+                    if (playerId) {
+                        localStorage.setItem(LS("userId"), String(playerId));
                     }
-                    status.innerHTML = `<span class="spa-green">Valid! Player: ${data.player_id || data.name || "OK"}</span>`;
+                    status.innerHTML = `<span class="spa-green">Valid! Player: ${playerId || playerName || "OK"}</span>`;
                     document.getElementById("spa-sync-btn").disabled = false;
                 } catch (e) {
                     status.innerHTML = `<span class="spa-red">Error: ${e.message}</span>`;
