@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.4.2
+// @version      2.4.3
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -38,7 +38,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.4.2";
+    const VERSION = "2.4.3";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -1031,11 +1031,13 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
             const key = localStorage.getItem(LS("apiKey"));
             if (!key) return null;
             try {
-                const r = await fetch(`${API_BASE}/user/?selections=basic&key=${encodeURIComponent(key)}`);
+                // v2 path: `/user/profile` returns `{profile: {id, ...}}`.
+                // Avoid the v1-style `?selections=basic` shim — some Public
+                // keys get an `{error}` envelope from it under v2.
+                const r = await fetch(`${API_BASE}/user/profile?key=${encodeURIComponent(key)}`);
                 if (!r.ok) return null;
                 const d = await r.json();
-                // v2 wraps under `profile`; keep v1 fallback in case the API flips.
-                const id = (d && d.profile && d.profile.id) || (d && d.player_id);
+                const id = d && d.profile && d.profile.id;
                 if (id) {
                     localStorage.setItem(LS("userId"), String(id));
                     return id;
