@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supply Pack Analyzer
 // @namespace    https://github.com/eugene-torn-scripts/supply-pack-analyzer
-// @version      2.4.5
+// @version      2.4.6
 // @description  Analyze supply pack profitability in Torn City — tracks openings, purchases, drop rates, and EV via API sync.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
     //  CONSTANTS & CONFIG
     // ════════════════════════════════════════════════════════════
 
-    const VERSION = "2.4.5";
+    const VERSION = "2.4.6";
     const DB_NAME = "spa_db";
     const DB_VERSION = 1;
     const LS = (k) => "spa_" + k;
@@ -1035,9 +1035,19 @@ table.spa-table{width:100%;border-collapse:collapse;margin-top:8px}
                 // v2 path: `/user/profile` returns `{profile: {id, ...}}`.
                 // Avoid the v1-style `?selections=basic` shim — some Public
                 // keys get an `{error}` envelope from it under v2.
-                const r = await fetch(`${API_BASE}/user/profile?key=${encodeURIComponent(key)}`);
-                if (!r.ok) return null;
-                const d = await r.json();
+                // On PDA, native fetch() to api.torn.com is unreliable inside
+                // the webview (BH hits the same problem); use PDA_httpGet.
+                const url = `${API_BASE}/user/profile?key=${encodeURIComponent(key)}`;
+                let d;
+                if (IS_PDA) {
+                    const res = await PDA_httpGet(url);
+                    if (res.status < 200 || res.status >= 300) return null;
+                    d = JSON.parse(res.responseText);
+                } else {
+                    const r = await fetch(url);
+                    if (!r.ok) return null;
+                    d = await r.json();
+                }
                 const id = d && d.profile && d.profile.id;
                 if (id) {
                     localStorage.setItem(LS("userId"), String(id));
